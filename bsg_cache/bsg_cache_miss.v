@@ -39,6 +39,7 @@ module bsg_cache_miss
     ,input bsg_cache_decode_s decode_v_i
     ,input [addr_width_p-1:0] addr_v_i
     ,input [data_mask_width_lp-1:0] mask_v_i
+    ,input [data_width_p-1:0] data_v_i
     ,input [ways_p-1:0][tag_width_lp-1:0] tag_v_i
     ,input [ways_p-1:0] valid_v_i
     ,input [ways_p-1:0] lock_v_i
@@ -164,14 +165,24 @@ module bsg_cache_miss
   logic [lg_ways_lp-1:0] addr_way_v;
   logic [lg_block_size_in_words_lp-1:0] addr_block_offset_v;
 
-  assign addr_index_v
-    = addr_v_i[block_offset_width_lp+:lg_sets_lp];
-  assign addr_tag_v
-    = addr_v_i[block_offset_width_lp+lg_sets_lp+:tag_width_lp];
-  assign addr_way_v
-    = addr_v_i[block_offset_width_lp+lg_sets_lp+:lg_ways_lp];
-  assign addr_block_offset_v
-    = addr_v_i[lg_data_mask_width_lp+:lg_block_size_in_words_lp];
+  assign addr_index_v           = addr_v_i[block_offset_width_lp+:lg_sets_lp];
+  assign addr_tag_v             = addr_v_i[block_offset_width_lp+lg_sets_lp+:tag_width_lp];
+  assign addr_way_v             = addr_v_i[block_offset_width_lp+lg_sets_lp+:lg_ways_lp];
+  assign addr_block_offset_v    = addr_v_i[lg_data_mask_width_lp+:lg_block_size_in_words_lp];
+
+  logic [tag_width_lp-1:0]              addr_tag_2v;
+  logic [lg_sets_lp-1:0]                addr_index_2v;
+  logic [lg_ways_lp-1:0]                addr_way_2v;
+  logic [lg_block_size_in_words_lp-1:0] addr_block_offset_2v;
+
+  always_ff @(posedge clk_i) begin
+    if(miss_v_i) begin
+      addr_tag_2v			<= addr_index_v;
+      addr_index_2v			<= addr_tag_v; 
+      addr_way_2v		    <= addr_way_v; 
+      addr_block_offset_2v	<= addr_block_offset_v;
+    end
+  end
 
   assign stat_mem_addr_o = addr_index_v;
   assign tag_mem_addr_o = addr_index_v;

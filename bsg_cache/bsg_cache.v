@@ -457,6 +457,7 @@ end
     ,.decode_v_i(decode_v_r)
     ,.addr_v_i(addr_v_r)
     ,.mask_v_i(mask_v_r)
+    ,.data_v_i(data_v_r)
 
     ,.tag_v_i(tag_v_r)
     ,.valid_v_i(valid_v_r)

@@ -365,23 +365,66 @@ end
                                         ? ~(&mask_v_r)
                                         : (decode_v_r.data_size_op < lg_data_mask_width_lp));
 
-  wire ld_st_amo_tag_miss = (decode_v_r.ld_op | decode_v_r.st_op | decode_v_r.atomic_op) & ~tag_hit_found;
-  wire track_miss = (decode_v_r.ld_op | decode_v_r.atomic_op | partial_st_v)
-                    & tag_hit_found & ~(track_data_v_r[tag_hit_way_id][addr_block_offset_v] | bypass_track_lo); 
+  wire ld_st_amo_tag_miss = (decode_v_r.ld_op 
+                            | decode_v_r.st_op 
+                            | decode_v_r.atomic_op) 
+                            & ~tag_hit_found;
+
+  wire track_miss = (decode_v_r.ld_op 
+                    | decode_v_r.atomic_op 
+                    | partial_st_v)
+                    & tag_hit_found 
+                    & ~(track_data_v_r[tag_hit_way_id][addr_block_offset_v] 
+                    | bypass_track_lo); 
+
   wire tagfl_hit = decode_v_r.tagfl_op & valid_v_r[addr_way_v];
-  wire aflinv_hit = (decode_v_r.afl_op | decode_v_r.aflinv_op| decode_v_r.ainv_op) & tag_hit_found;
-  wire alock_miss = decode_v_r.alock_op & (tag_hit_found ? ~lock_v_r[tag_hit_way_id] : 1'b1);   // either the line is miss, or the line is unlocked.
-  wire aunlock_hit = decode_v_r.aunlock_op & (tag_hit_found ? lock_v_r[tag_hit_way_id] : 1'b0); // the line is hit and locked. 
+
+  wire aflinv_hit = (decode_v_r.afl_op 
+                    | decode_v_r.aflinv_op
+                    | decode_v_r.ainv_op) 
+                    & tag_hit_found;
+
+  wire alock_miss = decode_v_r.alock_op 
+                    & (tag_hit_found ? ~lock_v_r[tag_hit_way_id] : 1'b1);   // either the line is miss, or the line is unlocked.
+  wire aunlock_hit = decode_v_r.aunlock_op 
+                    & (tag_hit_found ? lock_v_r[tag_hit_way_id] : 1'b0); // the line is hit and locked. 
 
   // miss_v signal activates the miss handling unit.
   // MBT: the ~decode_v_r.tagst_op is necessary at the top of this expression
   //      to avoid X-pessimism post synthesis due to X's coming out of the tags
-  wire miss_v = (~decode_v_r.tagst_op) & v_v_r
-    & (ld_st_amo_tag_miss | track_miss | tagfl_hit | aflinv_hit | alock_miss | aunlock_hit);
+  wire miss_v = ~decode_v_r.tagst_op 
+                & v_v_r
+                & miss_counter
+                & (ld_st_amo_tag_miss 
+                | track_miss 
+                | tagfl_hit 
+                | aflinv_hit 
+                | alock_miss 
+                | aunlock_hit);
+  
+  wire miss =   ~decode_v_r.tagst_op 
+                & v_v_r
+                & (ld_st_amo_tag_miss 
+                | track_miss 
+                | tagfl_hit 
+                | aflinv_hit 
+                | alock_miss 
+                | aunlock_hit);
+
+  logic miss_counter;
+  always_ff @(posedge clk_i) begin
+      if(reset_i) begin
+        miss_counter <= 1'b0; 
+      end else if(miss) begin
+        miss_counter <= 1'b1; 
+      end  
+  end
   
   // ops that return some value other than '0.
-  assign retval_op_v = decode_v_r.ld_op | decode_v_r.taglv_op | decode_v_r.tagla_op | decode_v_r.atomic_op; 
-
+  assign retval_op_v = decode_v_r.ld_op 
+                        | decode_v_r.taglv_op 
+                        | decode_v_r.tagla_op 
+                        | decode_v_r.atomic_op; 
   // stat_mem
   //
   `declare_bsg_cache_stat_info_s(ways_p);  
@@ -452,7 +495,7 @@ end
     .clk_i(clk_i)
     ,.reset_i(reset_i)
     
-    ,.miss_v_i(miss_v)
+    ,.miss_v_i(miss)
     ,.track_miss_i(track_miss)
     ,.decode_v_i(decode_v_r)
     ,.addr_v_i(addr_v_r)
@@ -970,13 +1013,8 @@ end
 
   // ctrl logic
   //
-  assign v_o = v_v_r & (miss_v
-    ? miss_done_lo
-    : 1'b1); 
-
-  assign v_we = v_v_r
-    ? (v_o & yumi_i)
-    : 1'b1;
+  assign v_o = v_v_r & (miss_v ? miss_done_lo : 1'b1); 
+  assign v_we = v_v_r ? (v_o & yumi_i) : 1'b1;
 
   // when the store buffer is full, and the TV stage is inserting another entry,
   // load/atomic cannot enter tl stage.

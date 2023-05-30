@@ -1,7 +1,7 @@
 #
 # Makefile
 #
-include ../../../../bsg_cadenv/cadenv.mk
+#include ../../../../bsg_cadenv/cadenv.mk
 export BASEJUMP_STL_DIR = $(abspath ../../..)
 
 WAYS_P ?= 2
@@ -31,10 +31,7 @@ $(TRACE_ROM_V): $(TRACE_FILE)
 	> $(TRACE_ROM_V)
 
 sim: $(TRACE_ROM_V)
-	vcs +v2k -R +lint=all,noSVA-UA,noSVA-NSVU,noVCDE \
-		-sverilog -full64 -assert svaext -f sv.include $(INCDIR) $(TRACE_ROM_V)\
-		-timescale=1ps/1ps +vcs+vcdpluson $(DEFINE) -l vcs.log\
-		| $(HIGHLIGHT)
+	verilator -f sv.include $(INCDIR) $(TRACE_ROM_V) $(DEFINE) --cc --top-module testbench --timescale 1ps/1ps -Wno-TIMESCALEMOD
 
 dve:
 	dve -full64 -vpd vcdplus.vpd &

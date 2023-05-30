@@ -1,0 +1,14 @@
+tbuf_yumi_li
+-------------
+Need to allow the track buffer to write to the track mem while there is a miss being handled
+Q: What does the track buffer write to the track mem?
+Q: When does the miss handler access the track mem?
+
+tbuf_way_li
+------------
+
+sbuf_yumi_li
+------------
+
+sbuf_entry_li.way_id
+--------------------

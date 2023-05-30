@@ -392,15 +392,7 @@ end
   // miss_v signal activates the miss handling unit.
   // MBT: the ~decode_v_r.tagst_op is necessary at the top of this expression
   //      to avoid X-pessimism post synthesis due to X's coming out of the tags
-  wire miss_v = ~decode_v_r.tagst_op 
-                & v_v_r
-                & miss_counter
-                & (ld_st_amo_tag_miss 
-                | track_miss 
-                | tagfl_hit 
-                | aflinv_hit 
-                | alock_miss 
-                | aunlock_hit);
+  wire miss_v = miss & miss_counter;
   
   wire miss =   ~decode_v_r.tagst_op 
                 & v_v_r
@@ -1027,9 +1019,13 @@ end
   // 3) dma engine is writing to data_mem
   // 4) tl_stage is recovering from tag_miss
   // 5) DMA is evicting a block.
-  wire tl_ready = (miss_v
-    ? (~(decode.tagst_op & v_i) & ~miss_tag_mem_v_lo & ~miss_track_mem_v_lo & ~dma_data_mem_v_lo & ~recover_lo & ~dma_evict_lo)
-    : 1'b1) & ~sbuf_hazard;
+  wire tl_ready = (miss_v ? (~(decode.tagst_op & v_i) 
+                            & ~miss_tag_mem_v_lo 
+                            & ~miss_track_mem_v_lo 
+                            & ~dma_data_mem_v_lo 
+                            & ~recover_lo 
+                            & ~dma_evict_lo) : 1'b1) & ~sbuf_hazard;
+
   assign tl_we =  tl_ready & (v_tl_r ? v_we : 1'b1);
   assign yumi_o = v_i & tl_we;
 

@@ -25,8 +25,7 @@ module bsg_cache
     ,parameter `BSG_INV_PARAM(word_tracking_p)
 
     // Explicit size prevents size inference and allows for ((foo == bar) << e_cache_amo_swap)
-    ,parameter [31:0] amo_support_p=(1 << e_cache_amo_swap)
-                                    | (1 << e_cache_amo_or)
+    ,parameter [31:0] amo_support_p=(1 << e_cache_amo_swap) | (1 << e_cache_amo_or)
 
     // dma burst width
     ,parameter dma_data_width_p=data_width_p // default value. it can also be pow2 multiple of data_width_p.
@@ -66,6 +65,7 @@ module bsg_cache
     // needs to move together with the corresponding instruction. The usage of
     // this signal is totally optional.
     ,output logic v_we_o
+    ,output logic id_o
   );
 
 
@@ -89,7 +89,28 @@ module bsg_cache
   localparam dma_data_mask_width_lp=(dma_data_width_p>>3);
   localparam data_mem_els_lp = sets_p*burst_len_lp;
   localparam lg_data_mem_els_lp = `BSG_SAFE_CLOG2(data_mem_els_lp);
+    
+  logic [data_mask_width_lp-1:0]        mask_v_miss_o;
+  bsg_cache_decode_s                    decode_v_miss_o;
+  logic [tag_width_lp-1:0]              addr_v_miss_o;
+  logic [data_width_p-1:0]              data_v_miss_o;
+  logic [ways_p-1:0]                    valid_v_miss_o;
+  logic [ways_p-1:0][tag_width_lp-1:0]  tag_v_miss_o;
+  logic [ways_p-1:0]                    lock_v_miss_o;
 
+  logic miss_active_lo;
+  logic stall;
+  logic dma_stall_lo;
+  logic [data_width_p-1:0] data_lo;
+
+  always_comb begin 
+    stall = miss_active_lo & miss_v; // Stall when second miss
+    stall |= dma_stall_lo;
+    stall |= miss_track_mem_v_lo;
+    stall |= recover_lo;
+    stall |= miss_stat_mem_v_lo;
+    stall |= miss_tag_mem_v_lo;
+  end
 
   // instruction decoding
   //
@@ -108,10 +129,8 @@ module bsg_cache
     ,.decode_o(decode)
   );
 
-  assign addr_way
-    = cache_pkt.addr[block_offset_width_lp+lg_sets_lp+:lg_ways_lp];
-  assign addr_index
-    = cache_pkt.addr[block_offset_width_lp+:lg_sets_lp];
+  assign addr_way   = cache_pkt.addr[block_offset_width_lp+lg_sets_lp+:lg_ways_lp];
+  assign addr_index = cache_pkt.addr[block_offset_width_lp+:lg_sets_lp];
 
   logic [lg_data_mem_els_lp-1:0] ld_data_mem_addr;
 
@@ -124,7 +143,6 @@ module bsg_cache
   else begin
     assign ld_data_mem_addr = {addr_index, cache_pkt.addr[lg_data_mask_width_lp+lg_burst_size_in_words_lp+:lg_burst_len_lp]};
   end
-
 
   // tl_stage
   //
@@ -164,8 +182,7 @@ module bsg_cache
 
   logic [lg_sets_lp-1:0] addr_index_tl;
 
-  assign addr_index_tl =
-    addr_tl_r[block_offset_width_lp+:lg_sets_lp];
+  assign addr_index_tl = addr_tl_r[block_offset_width_lp+:lg_sets_lp];
 
   logic [lg_data_mem_els_lp-1:0] recover_data_mem_addr;
 
@@ -241,7 +258,6 @@ module bsg_cache
     ,.data_o(data_mem_data_lo)
   );
 
-
   // track_mem
   //
   logic track_mem_v_li;
@@ -251,72 +267,113 @@ module bsg_cache
   logic [ways_p-1:0][block_size_in_words_p-1:0] track_mem_w_mask_li;
   logic [ways_p-1:0][block_size_in_words_p-1:0] track_mem_data_lo;
 
-if (word_tracking_p) begin : track_mem_gen
-  bsg_mem_1rw_sync_mask_write_bit #(
-    .width_p(block_size_in_words_p*ways_p)
-    ,.els_p(sets_p)
-    ,.latch_last_read_p(1)
-  ) track_mem (
-    .clk_i(clk_i)
-    ,.reset_i(reset_i)
-    ,.v_i(track_mem_v_li)
-    ,.w_i(track_mem_w_li)
-    ,.addr_i(track_mem_addr_li)
-    ,.data_i(track_mem_data_li)
-    ,.w_mask_i(track_mem_w_mask_li)
-    ,.data_o(track_mem_data_lo)
-  );
-end
-else begin
-  for (genvar i = 0; i < ways_p; i++) begin
-    assign track_mem_data_lo[i] = {block_size_in_words_p{1'b1}};
+  if (word_tracking_p) begin : track_mem_gen
+    bsg_mem_1rw_sync_mask_write_bit #(
+      .width_p(block_size_in_words_p*ways_p)
+      ,.els_p(sets_p)
+      ,.latch_last_read_p(1)
+    ) track_mem (
+      .clk_i(clk_i)
+      ,.reset_i(reset_i)
+      ,.v_i(track_mem_v_li)
+      ,.w_i(track_mem_w_li)
+      ,.addr_i(track_mem_addr_li)
+      ,.data_i(track_mem_data_li)
+      ,.w_mask_i(track_mem_w_mask_li)
+      ,.data_o(track_mem_data_lo)
+    );
   end
-end
+
+  else begin
+    for (genvar i = 0; i < ways_p; i++) begin
+      assign track_mem_data_lo[i] = {block_size_in_words_p{1'b1}};
+    end
+  end
 
   // v stage
   //
   logic v_we;
   logic v_v_r;
-  bsg_cache_decode_s decode_v_r;
-  logic [data_mask_width_lp-1:0] mask_v_r;
-  logic [addr_width_p-1:0] addr_v_r;
-  logic [data_width_p-1:0] data_v_r;
-  logic [ways_p-1:0] valid_v_r;
-  logic [ways_p-1:0] lock_v_r;
-  logic [ways_p-1:0][tag_width_lp-1:0] tag_v_r;
-  logic [ways_p-1:0][dma_data_width_p-1:0] ld_data_v_r;
-  logic [ways_p-1:0][block_size_in_words_p-1:0] track_data_v_r;
-  logic retval_op_v;
 
+  bsg_cache_decode_s decode_v_mux;
+  logic [data_mask_width_lp-1:0] mask_v_mux;
+  logic [addr_width_p-1:0] addr_v_mux;
+  logic [data_width_p-1:0] data_v_mux;
+  logic [ways_p-1:0] valid_v_mux;
+  logic [ways_p-1:0] lock_v_mux;
+  logic [ways_p-1:0][tag_width_lp-1:0] tag_v_mux;
+  logic [ways_p-1:0][dma_data_width_p-1:0] ld_data_v_mux;
+  logic [ways_p-1:0][block_size_in_words_p-1:0] track_data_v_mux;
+  logic retval_op_v;
+  
   always_ff @ (posedge clk_i) begin
     if (reset_i) begin
       v_v_r <= 1'b0;
-      {mask_v_r
-      ,decode_v_r
-      ,addr_v_r
-      ,data_v_r
-      ,valid_v_r
-      ,lock_v_r
-      ,tag_v_r
-      ,track_data_v_r} <= '0;
-    end
-    else begin
-      if (v_we) begin
-        v_v_r <= v_tl_r;
-        if (v_tl_r) begin
-          mask_v_r <= mask_tl_r;
-          decode_v_r <= decode_tl_r;
-          addr_v_r <= addr_tl_r;
-          data_v_r <= data_tl_r;
-          valid_v_r <= valid_tl;
-          tag_v_r <= tag_tl;
-          lock_v_r <= lock_tl;
-          ld_data_v_r <= data_mem_data_lo;
-          track_data_v_r <= track_mem_data_lo;
-        end
+      {mask_v_mux
+      ,decode_v_mux
+      ,addr_v_mux
+      ,data_v_mux
+      ,valid_v_mux
+      ,lock_v_mux
+      ,tag_v_mux
+      ,track_data_v_mux} <= '0;
+    end else if(v_we) begin
+      v_v_r <= v_tl_r;
+      if (v_tl_r) begin
+        mask_v_mux        <= mask_tl_r;
+        decode_v_mux      <= decode_tl_r;
+        addr_v_mux        <= addr_tl_r;
+        data_v_mux        <= data_tl_r;
+        valid_v_mux       <= valid_tl;
+        tag_v_mux         <= tag_tl;
+        lock_v_mux        <= lock_tl;
+        ld_data_v_mux     <= data_mem_data_lo;
+        track_data_v_mux  <= track_mem_data_lo;
       end
     end
   end
+  
+  bsg_cache_decode_s                            decode_v_miss_lo;
+  logic [data_mask_width_lp-1:0]                mask_v_miss_lo;
+  logic [addr_width_p-1:0]                      addr_v_miss_lo;
+  logic [data_width_p-1:0]                      data_v_miss_lo;
+  logic [ways_p-1:0]                            valid_v_miss_lo;
+  logic [ways_p-1:0]                            lock_v_miss_lo;
+  logic [ways_p-1:0][tag_width_lp-1:0]          tag_v_miss_lo;
+  
+  bsg_cache_decode_s                            decode_v_r;
+  logic [data_mask_width_lp-1:0]                mask_v_r;
+  logic [addr_width_p-1:0]                      addr_v_r;
+  logic [data_width_p-1:0]                      data_v_r;
+  logic [ways_p-1:0]                            valid_v_r;
+  logic [ways_p-1:0]                            lock_v_r;
+  logic [ways_p-1:0][tag_width_lp-1:0]          tag_v_r;
+  logic [ways_p-1:0][dma_data_width_p-1:0]      ld_data_v_r;
+  logic [ways_p-1:0][block_size_in_words_p-1:0] track_data_v_r;
+    
+  // Mux in miss handler data on store miss
+  always_comb begin 
+    if(dma_data_mem_w_lo & (decode_v_miss_lo.st_op | decode_v_miss_lo.atomic_op)) begin 
+        mask_v_r        = mask_v_miss_lo; 
+        decode_v_r      = decode_v_miss_lo; 
+        addr_v_r        = addr_v_miss_lo; 
+        data_v_r        = data_v_miss_lo; 
+        valid_v_r       = valid_v_miss_lo; 
+        tag_v_r         = tag_v_miss_lo; 
+        lock_v_r        = lock_v_miss_lo; 
+    end else begin 
+        mask_v_r        = mask_v_mux; 
+        decode_v_r      = decode_v_mux; 
+        addr_v_r        = addr_v_mux; 
+        data_v_r        = data_v_mux; 
+        valid_v_r       = valid_v_mux; 
+        tag_v_r         = tag_v_mux; 
+        lock_v_r        = lock_v_mux; 
+    end
+  end
+
+  assign ld_data_v_r     = ld_data_v_mux; 
+  assign track_data_v_r  = track_data_v_mux;
 
   assign v_we_o = v_we;
   
@@ -326,15 +383,10 @@ end
   logic [lg_block_size_in_words_lp-1:0] addr_block_offset_v;
   logic [ways_p-1:0] tag_hit_v;
 
-  assign addr_tag_v =
-    addr_v_r[block_offset_width_lp+lg_sets_lp+:tag_width_lp];
-  assign addr_index_v =
-    addr_v_r[block_offset_width_lp+:lg_sets_lp];
-  assign addr_way_v =
-    addr_v_r[block_offset_width_lp+lg_sets_lp+:lg_ways_lp];
-  assign addr_block_offset_v = (block_size_in_words_p > 1)
-    ? addr_v_r[lg_data_mask_width_lp+:lg_block_size_in_words_lp]
-    : 1'b0;
+  assign addr_tag_v             = addr_v_r[block_offset_width_lp+lg_sets_lp+:tag_width_lp];
+  assign addr_index_v           = addr_v_r[block_offset_width_lp+:lg_sets_lp];
+  assign addr_way_v             = addr_v_r[block_offset_width_lp+lg_sets_lp+:lg_ways_lp];
+  assign addr_block_offset_v    = (block_size_in_words_p > 1) ? addr_v_r[lg_data_mask_width_lp+:lg_block_size_in_words_lp] : 1'b0;
 
   for (genvar i = 0; i < ways_p; i++) begin
     assign tag_hit_v[i] = (addr_tag_v == tag_v_r[i]) & valid_v_r[i];
@@ -392,9 +444,8 @@ end
   // miss_v signal activates the miss handling unit.
   // MBT: the ~decode_v_r.tagst_op is necessary at the top of this expression
   //      to avoid X-pessimism post synthesis due to X's coming out of the tags
-  wire miss_v = miss & miss_counter;
   
-  wire miss =   ~decode_v_r.tagst_op 
+  wire miss_v = ~decode_v_r.tagst_op 
                 & v_v_r
                 & (ld_st_amo_tag_miss 
                 | track_miss 
@@ -403,15 +454,6 @@ end
                 | alock_miss 
                 | aunlock_hit);
 
-  logic miss_counter;
-  always_ff @(posedge clk_i) begin
-      if(reset_i) begin
-        miss_counter <= 1'b0; 
-      end else if(miss) begin
-        miss_counter <= 1'b1; 
-      end  
-  end
-  
   // ops that return some value other than '0.
   assign retval_op_v = decode_v_r.ld_op 
                         | decode_v_r.taglv_op 
@@ -487,7 +529,7 @@ end
     .clk_i(clk_i)
     ,.reset_i(reset_i)
     
-    ,.miss_v_i(miss)
+    ,.miss_v_i(miss_v)
     ,.track_miss_i(track_miss)
     ,.decode_v_i(decode_v_r)
     ,.addr_v_i(addr_v_r)
@@ -537,7 +579,20 @@ end
     ,.chosen_way_o(chosen_way_lo)
     
     ,.ack_i(v_o & yumi_i) 
+    ,.dma_stall_o(dma_stall_lo)
     ,.select_snoop_data_r_o(select_snoop_data_r_lo)
+    ,.miss_active_o(miss_active_lo)
+    ,.id(id_o)
+
+    ,.data_o            (data_lo)
+    ,.mask_v_miss_o     (mask_v_miss_lo  )
+    ,.decode_v_miss_o   (decode_v_miss_lo)
+    ,.addr_v_miss_o     (addr_v_miss_lo  )
+    ,.data_v_miss_o     (data_v_miss_lo  )
+    ,.valid_v_miss_o    (valid_v_miss_lo )
+    ,.tag_v_miss_o      (tag_v_miss_lo   )
+    ,.lock_v_miss_o     (lock_v_miss_lo  )
+
   );
 
   // dma
@@ -786,8 +841,7 @@ end
       assign slice_data = decode_v_r.atomic_op
         ? atomic_result[0+:slice_width_lp]
         : data_v_r[0+:slice_width_lp];
-    end 
-    else begin
+    end else begin
       assign slice_data = data_v_r[0+:slice_width_lp];
     end
 
@@ -814,11 +868,10 @@ end
 
   // store buffer data,mask input
   always_comb begin
-    if (decode_v_r.mask_op) begin
+    if(decode_v_r.mask_op) begin
       sbuf_entry_li.data = data_v_r;
       sbuf_entry_li.mask = mask_v_r;
-    end
-    else begin
+    end else begin
       sbuf_entry_li.data = sbuf_data_in;
       sbuf_entry_li.mask = sbuf_mask_in;
     end
@@ -969,8 +1022,6 @@ end
 
       assign ld_data_final_li[i] = 
         {{(data_width_p-(8*(2**i))){decode_v_r.sigext_op & byte_sel[(8*(2**i))-1]}}, byte_sel};
-
-
   end
   
   bsg_mux #(
@@ -1005,13 +1056,23 @@ end
 
   // ctrl logic
   //
-  assign v_o = v_v_r & (miss_v ? miss_done_lo : 1'b1); 
+  assign v_o = v_v_r & (stall ? miss_done_lo : 1'b1); 
+  // If miss_done_lo, load from the previous stage
+  // If it's a hit, miss_v will be deasserted
+  // If it's a miss, miss_v will stay asserted and we'll go through the miss
+  // handler again
   assign v_we = v_v_r ? (v_o & yumi_i) : 1'b1;
 
   // when the store buffer is full, and the TV stage is inserting another entry,
   // load/atomic cannot enter tl stage.
-  assign sbuf_hazard = (sbuf_full_lo & (v_o & yumi_i & (decode_v_r.st_op | decode_v_r.atomic_op)))
-    & (v_i & (decode.ld_op | decode.atomic_op));
+  //assign sbuf_hazard = (sbuf_full_lo & (v_o & yumi_i & (decode_v_r.st_op | decode_v_r.atomic_op)))
+    //& (v_i & (decode.ld_op | decode.atomic_op));
+  
+  always_comb begin
+    sbuf_hazard = sbuf_full_lo; 
+    sbuf_hazard &= v_o & yumi_i & (decode_v_r.st_op | decode_v_r.atomic_op);
+    sbuf_hazard &= v_i & (decode.ld_op | decode.atomic_op);
+  end
 
   // during miss, tl pipeline cannot take next instruction when
   // 1) input is tagst
@@ -1019,17 +1080,35 @@ end
   // 3) dma engine is writing to data_mem
   // 4) tl_stage is recovering from tag_miss
   // 5) DMA is evicting a block.
-  wire tl_ready = (miss_v ? (~(decode.tagst_op & v_i) 
-                            & ~miss_tag_mem_v_lo 
-                            & ~miss_track_mem_v_lo 
-                            & ~dma_data_mem_v_lo 
-                            & ~recover_lo 
-                            & ~dma_evict_lo) : 1'b1) & ~sbuf_hazard;
+  //wire tl_ready = (miss_v ? (~(decode.tagst_op & v_i) 
+  //                          & ~miss_tag_mem_v_lo 
+  //                          & ~miss_track_mem_v_lo 
+  //                          & ~dma_data_mem_v_lo 
+  //                          & ~recover_lo 
+  //                          & ~dma_evict_lo) : 1'b1) & ~sbuf_hazard;
+  logic tl_ready;
+  always_comb begin 
+    tl_ready = ~sbuf_hazard;
+    // Only assert tl_ready when not accessing any of the rams in the tl stage
+    if(miss_v | miss_active_lo) begin 
+        tl_ready = ~(decode.tagst_op & v_i);
+        tl_ready &= ~miss_tag_mem_v_lo; 
+        tl_ready &= ~miss_track_mem_v_lo; 
+        tl_ready &= ~dma_data_mem_v_lo; 
+        tl_ready &= ~recover_lo;
+        tl_ready &= ~sbuf_hazard;
+    end
+  end
 
-  assign tl_we =  tl_ready & (v_tl_r ? v_we : 1'b1);
+  assign tl_we = tl_ready & (v_tl_r ? v_we : 1'b1);
+  // Get the next op if there is room in the tl stage
   assign yumi_o = v_i & tl_we;
+    
 
-  // tag_mem
+  // -----------------------------------------
+  //            tag_mem ctrl logic
+  // -----------------------------------------
+  
   // values written by tagst command
  
   logic tagst_valid;
@@ -1037,9 +1116,9 @@ end
   logic [tag_width_lp-1:0] tagst_tag;
   logic tagst_write_en;
 
-  assign tagst_valid = cache_pkt.data[data_width_p-1];
-  assign tagst_lock = cache_pkt.data[data_width_p-2];
-  assign tagst_tag = cache_pkt.data[0+:tag_width_lp];
+  assign tagst_valid    = cache_pkt.data[data_width_p-1];
+  assign tagst_lock     = cache_pkt.data[data_width_p-2];
+  assign tagst_tag      = cache_pkt.data[0+:tag_width_lp];
   assign tagst_write_en = decode.tagst_op & yumi_o;
 
   logic [ways_p-1:0] addr_way_decode;
@@ -1050,91 +1129,168 @@ end
     ,.o(addr_way_decode)
   );
 
-  assign tag_mem_v_li = (decode.tag_read_op & yumi_o)
-    | (recover_lo & decode_tl_r.tag_read_op & v_tl_r)
-    | miss_tag_mem_v_lo
-    | (decode.tagst_op & yumi_o); 
-  
-  assign tag_mem_w_li = miss_v
-    ? (miss_tag_mem_v_lo & miss_tag_mem_w_lo)
-    : tagst_write_en;
+  //assign tag_mem_v_li = (decode.tag_read_op & yumi_o)
+  //  | (recover_lo & decode_tl_r.tag_read_op & v_tl_r)
+  //  | miss_tag_mem_v_lo
+  //  | (decode.tagst_op & yumi_o); 
 
-  always_comb begin
-    if (miss_v) begin
-      tag_mem_addr_li = recover_lo
-        ? addr_index_tl
-        : (miss_tag_mem_v_lo ? miss_tag_mem_addr_lo : addr_index);
-      tag_mem_data_li = miss_tag_mem_data_lo;
-      tag_mem_w_mask_li = miss_tag_mem_w_mask_lo;
-    end
-    else begin
-      // for TAGST
-      tag_mem_addr_li = addr_index;
-      for (integer i = 0; i < ways_p; i++) begin
-        tag_mem_data_li[i] = {tagst_valid, tagst_lock, tagst_tag};
-        tag_mem_w_mask_li[i] = {tag_info_width_lp{addr_way_decode[i]}};
-      end
+  always_comb begin 
+    tag_mem_v_li = decode.tag_read_op & yumi_o;
+    tag_mem_v_li |= recover_lo & decode_tl_r.tag_read_op & v_tl_r;
+    tag_mem_v_li |= miss_tag_mem_v_lo;
+    tag_mem_v_li |= decode.tagst_op & yumi_o;
+  end
+  
+  //assign tag_mem_w_li = miss_v
+  //  ? (miss_tag_mem_v_lo & miss_tag_mem_w_lo)
+  //  : tagst_write_en;
+
+  //always_comb begin 
+  //  if(miss_v) begin 
+  //      tag_mem_w_li = miss_tag_mem_v_lo & miss_tag_mem_w_lo
+  //  end else begin 
+  //      tag_mem_w_li = tagst_write_en;
+  //  end
+  //end
+  
+  always_comb begin 
+    if(miss_tag_mem_v_lo) begin 
+        tag_mem_w_li = miss_tag_mem_w_lo;
+    end else begin 
+        tag_mem_w_li = tagst_write_en;
     end
   end
 
-  // data_mem ctrl logic
-  //
-  assign data_mem_v_li = ((yumi_o & (decode.ld_op | decode.atomic_op))
-    | (v_tl_r & recover_lo & (decode_tl_r.ld_op | decode_tl_r.atomic_op)) 
-    | dma_data_mem_v_lo
-    | (sbuf_v_lo & sbuf_yumi_li)
-  );
+  always_comb begin
+    //if (miss_v) begin
+    if (recover_lo | miss_tag_mem_v_lo) begin
+      tag_mem_addr_li   = recover_lo ? addr_index_tl : (miss_tag_mem_v_lo ? miss_tag_mem_addr_lo : addr_index);
+      tag_mem_data_li   = miss_tag_mem_data_lo;
+      tag_mem_w_mask_li = miss_tag_mem_w_mask_lo;
+    end else begin
+      // for TAGST
+      tag_mem_addr_li = addr_index;
+      for (integer i = 0; i < ways_p; i++) begin
+        tag_mem_data_li[i]      = {tagst_valid, tagst_lock, tagst_tag};
+        tag_mem_w_mask_li[i]    = {tag_info_width_lp{addr_way_decode[i]}};
+      end
+    end
+  end
+    
+  // ---------------------------------------
+  //        data_mem ctrl logic
+  // ---------------------------------------
+
+  //assign data_mem_v_li = ((yumi_o & (decode.ld_op | decode.atomic_op)) 
+  //| (v_tl_r & recover_lo & (decode_tl_r.ld_op | decode_tl_r.atomic_op)) 
+  //| dma_data_mem_v_lo | (sbuf_v_lo & sbuf_yumi_li));
   
-  assign data_mem_w_li = dma_data_mem_w_lo | (sbuf_v_lo & sbuf_yumi_li);
+  logic dequeue_sbuf;
+  assign dequeue_sbuf = sbuf_v_lo & sbuf_yumi_li;
+  
+  // Valid
+  always_comb begin 
+    data_mem_v_li = yumi_o & (decode.ld_op | decode.atomic_op);
+    data_mem_v_li |= v_tl_r & recover_lo & (decode_tl_r.ld_op | decode_tl_r.atomic_op);
+    data_mem_v_li |= dma_data_mem_v_lo;
+    data_mem_v_li |= dequeue_sbuf;
+  end
 
-  assign data_mem_data_li = dma_data_mem_w_lo
-    ? dma_data_mem_data_lo
-    : sbuf_data_mem_data;
+  // Write
+  assign data_mem_w_li = dma_data_mem_w_lo | dequeue_sbuf;
 
-  assign data_mem_addr_li = recover_lo
-    ? recover_data_mem_addr
-    : (dma_data_mem_v_lo
-      ? dma_data_mem_addr_lo
-      : (((decode.ld_op | decode.atomic_op) & yumi_o) 
-        ? ld_data_mem_addr
-        : sbuf_data_mem_addr));
+  //assign data_mem_data_li = dma_data_mem_w_lo
+  //  ? dma_data_mem_data_lo
+  //  : sbuf_data_mem_data;
+  
+  // Data
+  always_comb begin
+    if(dma_data_mem_w_lo) begin
+      data_mem_data_li = dma_data_mem_data_lo; 
+    end else begin 
+      data_mem_data_li = sbuf_data_mem_data;
+    end
+  end
 
-  assign data_mem_w_mask_li = dma_data_mem_w_lo
-    ? dma_data_mem_w_mask_lo
-    : sbuf_data_mem_w_mask;
+  //assign data_mem_addr_li = recover_lo ? recover_data_mem_addr 
+  //: (dma_data_mem_v_lo ? dma_data_mem_addr_lo 
+  //: (((decode.ld_op | decode.atomic_op) & yumi_o) ? ld_data_mem_addr : sbuf_data_mem_addr));
+ 
+  // Address
+  always_comb begin 
+    if(recover_lo) begin
+      data_mem_addr_li = sbuf_data_mem_addr;  
+    end else if(dma_data_mem_v_lo) begin
+      data_mem_addr_li = dma_data_mem_addr_lo;
+    end else if((decode.ld_op | decode.atomic_op) & yumi_o) begin
+      data_mem_addr_li = ld_data_mem_addr;
+    end else begin
+      data_mem_addr_li = sbuf_data_mem_addr;
+    end
+  end
+
+  //assign data_mem_w_mask_li = dma_data_mem_w_lo ? dma_data_mem_w_mask_lo : sbuf_data_mem_w_mask;
+
+  // Mask
+  always_comb begin 
+    if(dma_data_mem_w_lo) begin 
+        data_mem_w_mask_li = dma_data_mem_w_mask_lo;
+    end else begin
+        data_mem_w_mask_li = sbuf_data_mem_w_mask;
+    end
+  end
+
+  // ----------------------------------------
+  //            track_mem ctrl logic
+  // ----------------------------------------
+
+  //assign track_mem_v_li = ((yumi_o & (decode.ld_op | decode.atomic_op | partial_st))
+  //  | (v_tl_r & recover_lo & (decode_tl_r.ld_op | decode_tl_r.atomic_op | partial_st_tl))
+  //  | miss_track_mem_v_lo
+  //  | (tbuf_v_lo & tbuf_yumi_li)
+  //);
+
+  always_comb begin 
+    track_mem_v_li = yumi_o & (decode.ld_op | decode.atomic_op | partial_st);
+    track_mem_v_li |= v_tl_r & recover_lo & (decode_tl_r.ld_op | decode_tl_r.atomic_op | partial_st_tl);
+    track_mem_v_li |= miss_track_mem_v_lo;
+    track_mem_v_li |= tbuf_v_lo & tbuf_yumi_li;
+  end
+
+  assign track_mem_w_li         = miss_track_mem_v_lo ? miss_track_mem_w_lo       : (tbuf_v_lo & tbuf_yumi_li);
+  assign track_mem_data_li      = miss_track_mem_v_lo ? miss_track_mem_data_lo    : tbuf_track_mem_data;
+  assign track_mem_w_mask_li    = miss_track_mem_v_lo ? miss_track_mem_w_mask_lo : tbuf_track_mem_w_mask;
+
+  //assign track_mem_addr_li = recover_lo
+  //  ? addr_index_tl
+  //  : (miss_track_mem_v_lo
+  //    ? miss_track_mem_addr_lo
+  //    : (((decode.ld_op | decode.atomic_op | partial_st) & yumi_o)
+  //      ? addr_index
+  //      : tbuf_track_mem_addr));
+
+  always_comb begin 
+    if(recover_lo) begin 
+      track_mem_addr_li = addr_index_tl;
+    end else if(miss_track_mem_v_lo) begin
+      track_mem_addr_li = miss_track_mem_addr_lo;
+    end else if((decode.ld_op | decode.atomic_op | partial_st) & yumi_o) begin 
+      track_mem_addr_li = addr_index;
+    end else begin 
+      track_mem_addr_li = tbuf_track_mem_addr;
+    end
+  end
 
 
-  // track_mem ctrl logic
-  assign track_mem_v_li = ((yumi_o & (decode.ld_op | decode.atomic_op | partial_st))
-    | (v_tl_r & recover_lo & (decode_tl_r.ld_op | decode_tl_r.atomic_op | partial_st_tl))
-    | miss_track_mem_v_lo
-    | (tbuf_v_lo & tbuf_yumi_li)
-  );
+  // ------------------------------------------
+  //            stat_mem ctrl logic
+  // ------------------------------------------
 
-  assign track_mem_w_li = miss_track_mem_v_lo
-    ? miss_track_mem_w_lo
-    : (tbuf_v_lo & tbuf_yumi_li);
-
-  assign track_mem_data_li = miss_track_mem_v_lo
-    ? miss_track_mem_data_lo
-    : tbuf_track_mem_data;
-
-  assign track_mem_w_mask_li = miss_track_mem_v_lo
-    ? miss_track_mem_w_mask_lo
-    : tbuf_track_mem_w_mask;
-
-  assign track_mem_addr_li = recover_lo
-    ? addr_index_tl
-    : (miss_track_mem_v_lo
-      ? miss_track_mem_addr_lo
-      : (((decode.ld_op | decode.atomic_op | partial_st) & yumi_o)
-        ? addr_index
-        : tbuf_track_mem_addr));
-
-  // stat_mem ctrl logic
   // TAGST clears the stat_info as it exits tv stage.
   // If it's load or store, and there is a hit, it updates the dirty bits and LRU.
   // If there is a miss, stat_mem may be modified by the miss handler.
+
+  // Need to stall on stat mem access by the miss handler
 
   logic [ways_p-2:0] plru_decode_data_lo;
   logic [ways_p-2:0] plru_decode_mask_lo;
@@ -1148,59 +1304,74 @@ end
   );
 
   always_comb begin
-    if (miss_v) begin
-      stat_mem_v_li = miss_stat_mem_v_lo;
-      stat_mem_w_li = miss_stat_mem_w_lo;
-      stat_mem_addr_li = miss_stat_mem_addr_lo; // essentially same as addr_index_v
-      stat_mem_data_li = miss_stat_mem_data_lo;
-      stat_mem_w_mask_li = miss_stat_mem_w_mask_lo;
-    end
-    else begin
-      stat_mem_v_li = ((decode_v_r.st_op | decode_v_r.ld_op | decode_v_r.tagst_op | decode_v_r.atomic_op) & v_o & yumi_i);
-      stat_mem_w_li = ((decode_v_r.st_op | decode_v_r.ld_op | decode_v_r.tagst_op | decode_v_r.atomic_op) & v_o & yumi_i);
-      stat_mem_addr_li = addr_index_v;
-
-      if (decode_v_r.tagst_op) begin
+    if(miss_stat_mem_v_lo) begin
+      stat_mem_v_li         = miss_stat_mem_v_lo;
+      stat_mem_w_li         = miss_stat_mem_w_lo;
+      stat_mem_addr_li      = miss_stat_mem_addr_lo; // essentially same as addr_index_v
+      stat_mem_data_li      = miss_stat_mem_data_lo;
+      stat_mem_w_mask_li    = miss_stat_mem_w_mask_lo;
+    end else begin
+      stat_mem_v_li     = ((decode_v_r.st_op | decode_v_r.ld_op | decode_v_r.tagst_op | decode_v_r.atomic_op) & v_o & yumi_i);
+      stat_mem_w_li     = ((decode_v_r.st_op | decode_v_r.ld_op | decode_v_r.tagst_op | decode_v_r.atomic_op) & v_o & yumi_i);
+      stat_mem_addr_li  = addr_index_v;
+      if(decode_v_r.tagst_op) begin
         // for TAGST
-        stat_mem_data_li.dirty = {ways_p{1'b0}};
-        stat_mem_data_li.lru_bits = {(ways_p-1){1'b0}};
-        stat_mem_w_mask_li.dirty = {ways_p{1'b1}};
+        stat_mem_data_li.dirty      = {ways_p{1'b0}};
+        stat_mem_data_li.lru_bits   = {(ways_p-1){1'b0}};
+        stat_mem_w_mask_li.dirty    = {ways_p{1'b1}};
         stat_mem_w_mask_li.lru_bits = {(ways_p-1){1'b1}};
-      end
-      else begin
+      end else begin
         // for LD, ST
-        stat_mem_data_li.dirty = {ways_p{decode_v_r.st_op | decode_v_r.atomic_op}};
-        stat_mem_data_li.lru_bits = plru_decode_data_lo;
-        stat_mem_w_mask_li.dirty = {ways_p{decode_v_r.st_op | decode_v_r.atomic_op}} & tag_hit_v;
+        stat_mem_data_li.dirty      = {ways_p{decode_v_r.st_op | decode_v_r.atomic_op}};
+        stat_mem_data_li.lru_bits   = plru_decode_data_lo;
+        stat_mem_w_mask_li.dirty    = {ways_p{decode_v_r.st_op | decode_v_r.atomic_op}} & tag_hit_v;
         stat_mem_w_mask_li.lru_bits = plru_decode_mask_lo;
       end
     end
   end
 
+  // ---------------------------------------------
+  //                sbuf ctrl logic 
+  // ---------------------------------------------
+  
+  // Dequeue when store or atomic op and when the pipeline is read from
+  assign sbuf_v_li              = (decode_v_r.st_op | decode_v_r.atomic_op) & ((v_o & yumi_i) | dma_data_mem_w_lo);
+  assign sbuf_entry_li.way_id   = dma_data_mem_w_lo ? chosen_way_lo : tag_hit_way_id;
+  assign sbuf_entry_li.addr     = addr_v_r;
 
-  // store buffer
-  //
-  assign sbuf_v_li = (decode_v_r.st_op | decode_v_r.atomic_op) & v_o & yumi_i;
-  assign sbuf_entry_li.way_id = miss_v ? chosen_way_lo : tag_hit_way_id;
-  assign sbuf_entry_li.addr = addr_v_r;
   // store buffer can write to dmem when
   // 1) there is valid entry in store buffer.
   // 2) incoming request does not read DMEM.
   // 3) DMA engine is not accessing DMEM.
   // 4) TL read DMEM (and bypass from sbuf), and TV is not stalled (v_we).
   //    During miss, the store buffer can be drained.
-  assign sbuf_yumi_li = sbuf_v_lo
-    & ~((decode.ld_op | decode.atomic_op) & yumi_o)
-    & (~dma_data_mem_v_lo)
-    & ~(v_tl_r & (decode_tl_r.ld_op | decode_tl_r.atomic_op) & (~v_we) & (~miss_v)); 
+
+  //assign sbuf_yumi_li = sbuf_v_lo
+  //  & ~((decode.ld_op | decode.atomic_op) & yumi_o)
+  //  & (~dma_data_mem_v_lo)
+  //  & ~(v_tl_r & (decode_tl_r.ld_op | decode_tl_r.atomic_op) & (~v_we) & (~miss_v)); 
+
+  always_comb begin
+    sbuf_yumi_li = sbuf_v_lo;
+    // Laod is not at the input of the pipeline
+    sbuf_yumi_li &= ~((decode.ld_op | decode.atomic_op) & yumi_o);
+    sbuf_yumi_li &= ~(v_tl_r & (decode_tl_r.ld_op | decode_tl_r.atomic_op) & (~v_we) & (~dma_stall_lo));
+    //Can't dequeue if a valid load is in the tag lookup stage and not writing
+    //to the tag verify stage
+    //
+    //sbuf_yumi_li &= ~(v_tl_r & (decode_tl_r.ld_op | decode_tl_r.atomic_op) | v_we) | dma_stall_lo;
+  end
 
   assign sbuf_bypass_addr_li = addr_tl_r;
   assign sbuf_bypass_v_li = (decode_tl_r.ld_op | decode_tl_r.atomic_op) & v_tl_r & v_we;
-
-  // track buffer
-  //
+    
+  // ----------------------------------------------
+  //            track buffer ctrl logic
+  // ----------------------------------------------
+  
   assign tbuf_v_li = (decode_v_r.st_op & ~partial_st_v) & v_o & yumi_i;
-  assign tbuf_way_li = miss_v ? chosen_way_lo : tag_hit_way_id;
+  //assign tbuf_way_li = miss_v ? chosen_way_lo : tag_hit_way_id;
+  assign tbuf_way_li = dma_data_mem_w_lo ? chosen_way_lo : tag_hit_way_id;
   assign tbuf_addr_li = addr_v_r;
   // track buffer can write to track mem when
   // 1) there is valid entry in track buffer.
@@ -1208,10 +1379,17 @@ end
   // 3) miss handler is not accessing track mem.
   // 4) TL read track mem (and bypass from tbuf), and TV is not stalled (v_we).
   //    During miss, the track buffer can be drained.
-  assign tbuf_yumi_li = tbuf_v_lo
-    & ~((decode.ld_op | decode.atomic_op | partial_st) & yumi_o)
-    & (~miss_track_mem_v_lo)
-    & ~(v_tl_r & (decode_tl_r.ld_op | decode_tl_r.atomic_op | partial_st_tl) & (~v_we) & (~miss_v));
+  //assign tbuf_yumi_li = tbuf_v_lo
+  //  & ~((decode.ld_op | decode.atomic_op | partial_st) & yumi_o)
+  //  & (~miss_track_mem_v_lo)
+  //  & ~(v_tl_r & (decode_tl_r.ld_op | decode_tl_r.atomic_op | partial_st_tl) & (~v_we) & (~miss_v));
+
+  always_comb begin 
+    tbuf_yumi_li = tbuf_v_lo;
+    tbuf_yumi_li &= ~((decode.ld_op | decode.atomic_op | partial_st) & yumi_o);
+    tbuf_yumi_li &= ~(v_tl_r & (decode_tl_r.ld_op | decode_tl_r.atomic_op | partial_st_tl) & (~v_we) & (~dma_stall_lo));
+  end
+
 
   assign tbuf_bypass_addr_li = addr_tl_r;
   assign tbuf_bypass_v_li = (decode_tl_r.ld_op | decode_tl_r.atomic_op | partial_st_tl) & v_tl_r & v_we;

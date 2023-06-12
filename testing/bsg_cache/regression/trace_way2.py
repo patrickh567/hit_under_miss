@@ -15,13 +15,13 @@ if __name__ == "__main__":
 
   #### TEST BEGIN ####
   
-  # TAGST 00000000 0
-  tg.send(TAGST, 0<<14, 0) 
-  tg.recv(0)
+  ## TAGST 00000000 0
+  #tg.send(TAGST, 0<<14, 0) 
+  #tg.recv(0)
 
-  # TAGST 00004000 0
-  tg.send(TAGST, 1<<14, 0) 
-  tg.recv(0)
+  ## TAGST 00004000 0
+  #tg.send(TAGST, 1<<14, 0) 
+  #tg.recv(0)
 
   # SW 00000000 ffffffff
   tg.send(SW, 0, 0xffffffff)
@@ -30,6 +30,11 @@ if __name__ == "__main__":
   # LW 0
   tg.send(LW, 0)
   tg.recv(0xffffffff)
+  
+  tg.wait(16)
+  tg.done()
+
+  exit()
 
   # TAGFL 00000000
   tg.send(TAGFL, 0)

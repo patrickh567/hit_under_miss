@@ -1,0 +1,13 @@
+1. Does the pipeline pull the load data directly from the dma?
+2. If dma accessing data memory, stall and wait for store buffer to drain
+3. Recover using address in tag verify stage
+
+DMA must wait until store buffer is empty
+- Pipeline must stall and yumi signal must stay asserted
+
+Load->Load
+Load->Store
+- Will write new tag to tag memory and hit/miss will be re-evaluated on it's own. Will write to store buffer after hit is detected
+Store->Load
+- Will write new tag to tag memory and hit/miss will be re-evaluated on it's own
+Store->Store

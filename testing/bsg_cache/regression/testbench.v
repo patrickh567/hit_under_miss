@@ -24,11 +24,16 @@ module testbench();
   bit clk;
   bit reset;
 
-  bsg_nonsynth_clock_gen #(
-    .cycle_time_p(100)
-  ) clock_gen (
-    .o(clk)
-  );
+  //bsg_nonsynth_clock_gen #(
+  //  .cycle_time_p(100)
+  //) clock_gen (
+  //  .o(clk)
+  //);
+
+  initial begin 
+    clk = 1'b0;
+    forever #(10) clk = !clk;
+  end
 
   bsg_nonsynth_reset_gen #(
     .num_clocks_p(1)
@@ -63,6 +68,7 @@ module testbench();
   logic [data_width_p-1:0] dma_data_lo;
   logic dma_data_v_lo;
   logic dma_data_yumi_li;
+  logic id;
 
   bsg_cache #(
     .addr_width_p(addr_width_p)
@@ -97,6 +103,7 @@ module testbench();
     ,.dma_data_yumi_i(dma_data_yumi_li)
 
     ,.v_we_o() 
+    ,.id_o(id)
   );
 
   // output fifo
@@ -203,14 +210,21 @@ module testbench();
     ,.dma_data_yumi_o(dma_data_yumi_li)
   );
 
-
-  initial begin
-    wait(done)
-    //for (integer i = 0; i < 100000; i++) begin
-    //  @(posedge clk);
-    //end
-    $display("[BSG_FINISH] Test Successful.");
-    $finish;
+  always_ff @(posedge clk) begin 
+    if(done) begin 
+        $display("[BSG_FINISH] Test Successful.");
+        $finish();
+    end
   end
+
+
+  //initial begin
+  //  //wait(done)
+  //  //for (integer i = 0; i < 100000; i++) begin
+  //  //  @(posedge clk);
+  //  //end
+  //  $display("[BSG_FINISH] Test Successful.");
+  //  $finish;
+  //end
 
 endmodule

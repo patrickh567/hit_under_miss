@@ -1,5 +1,6 @@
 `ifndef BSG_DEFINES_V
 `define BSG_DEFINES_V
+`define VIVADO
 
 `define BSG_MAX(x,y) (((x)>(y)) ? (x) : (y))
 `define BSG_MIN(x,y) (((x)<(y)) ? (x) : (y))

@@ -94,7 +94,7 @@ module bsg_nonsynth_dma_model
         rd_req_ready = start_read & rd_req_delay_zero;
         rd_req_delay_n = start_read
           ? (rd_req_delay_zero
-            ? $urandom_range(dma_req_delay_p,0)
+            ? 100
             : rd_req_delay_r - 1) 
           : rd_req_delay_r;
         rd_addr_n = start_read & rd_req_delay_zero
@@ -107,7 +107,7 @@ module bsg_nonsynth_dma_model
           ? DELAY
           : WAIT;
         rd_delay_n = start_read & rd_req_delay_zero
-          ? $urandom_range(dma_data_delay_p, 0)
+          ? 100
           : rd_delay_r;
       end
 
@@ -118,13 +118,13 @@ module bsg_nonsynth_dma_model
           : DELAY;
 
         rd_data_delay_n = (rd_delay_r == 0)
-          ? $urandom_range(dma_data_delay_p, 0)
+          ? 100
           : rd_data_delay_r;
       end
 
       BUSY: begin
         rd_data_delay_n = rd_data_delay_zero
-          ? (dma_data_ready_i ? $urandom_range(dma_data_delay_p, 0) : 0)
+          ? (dma_data_ready_i ? 100 : 0)
           : rd_data_delay_r - 1;
         dma_data_v_o = rd_data_delay_zero;
         rd_counter_n = rd_data_delay_zero & dma_data_ready_i
@@ -197,7 +197,7 @@ module bsg_nonsynth_dma_model
         wr_req_ready = start_write & wr_req_delay_zero;
         wr_req_delay_n = start_write
           ? (wr_req_delay_zero
-            ? $urandom_range(dma_req_delay_p,0)
+            ? 100
             : wr_req_delay_r - 1)
           : wr_req_delay_r;
         wr_addr_n = start_write & wr_req_delay_zero
@@ -213,7 +213,7 @@ module bsg_nonsynth_dma_model
           ? DELAY
           : WAIT;
         wr_delay_n = start_write & wr_req_delay_zero
-          ? $urandom_range(dma_data_delay_p,0)
+          ? 100
           : wr_delay_r;
       end
       
@@ -223,13 +223,13 @@ module bsg_nonsynth_dma_model
           ? BUSY
           : DELAY;
         wr_data_delay_n = (wr_delay_r == 0)
-          ? $urandom_range(dma_data_delay_p, 0)
+          ? 100
           : wr_data_delay_r;
       end
 
       BUSY: begin
         wr_data_delay_n = wr_data_delay_zero
-          ? (dma_data_v_i ? $urandom_range(dma_data_delay_p, 0) : 0)
+          ? (dma_data_v_i ? 100 : 0)
           : wr_data_delay_r - 1;
 
         dma_data_yumi_o = dma_data_v_i & wr_data_delay_zero;
